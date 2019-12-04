@@ -454,6 +454,44 @@ class Decoder(nn.Module):
         return mel_outputs, gate_outputs, alignments
 
 
+class GradReverse(torch.autograd.Function):
+    """
+    Extension of grad reverse layer
+    """
+
+    @staticmethod
+    def forward(x):
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_output = grad_output.neg()  # constant lambda
+        return grad_output, None
+
+    def grad_reverse(x):
+        return GradReverse.apply(x)
+
+
+class AdversarialBlock(nn.Module):
+
+    def __init__(self, dim_input):
+        super(AdversarialBlock, self).__init__()
+        self.fc1 = nn.Linear(dim_input, 1024)
+        self.bn1 = nn.BatchNorm1d(1024)
+        self.fc2 = nn.Linear(1024, 1024)
+        self.bn2 = nn.BatchNorm1d(1024)
+        self.fc3 = nn.Linear(1024, 2)
+
+    def forward(self, input):
+        input = GradReverse.grad_reverse(input)
+        logits = F.relu(self.bn1(self.fc1(input)))
+        logits = F.dropout(logits)
+        logits = F.relu(self.bn2(self.fc2(logits)))
+        logits = F.dropout(logits)
+        logits = self.fc3(logits)
+
+        return F.log_softmax(logits, 1)
+
 class Tacotron2(nn.Module):
     def __init__(self, hparams):
         super(Tacotron2, self).__init__()
@@ -503,6 +541,7 @@ class Tacotron2(nn.Module):
         embedded_inputs = self.embedding(text_inputs).transpose(1, 2)
 
         encoder_outputs = self.encoder(embedded_inputs, text_lengths)
+        self.encoder_out = encoder_outputs
 
         mel_outputs, gate_outputs, alignments = self.decoder(
             encoder_outputs, mels, memory_lengths=text_lengths)

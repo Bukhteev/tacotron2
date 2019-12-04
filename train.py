@@ -213,6 +213,12 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
             model.zero_grad()
             x, y = model.parse_batch(batch)
             y_pred = model(x)
+            # networ = AdversarialBlock()
+            # adversarial_loss = (model.encoder_out)
+            try:
+                print(model.encoder_out.shape)
+            except:
+                print(model.encoder_out.size)
 
             loss = criterion(y_pred, y)
             if hparams.distributed_run:
