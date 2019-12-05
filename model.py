@@ -5,6 +5,7 @@ from torch import nn
 from torch.nn import functional as F
 from layers import ConvNorm, LinearNorm
 from utils import to_gpu, get_mask_from_lengths
+from GMVAE import GMVAE
 
 
 class LocationLayer(nn.Module):
@@ -48,7 +49,6 @@ class Attention(nn.Module):
         query: decoder output (batch, n_mel_channels * n_frames_per_step)
         processed_memory: processed encoder outputs (B, T_in, attention_dim)
         attention_weights_cat: cumulative and prev. att weights (B, 2, max_time)
-
         RETURNS
         -------
         alignment (batch, max_time)
@@ -245,7 +245,6 @@ class Decoder(nn.Module):
         PARAMS
         ------
         memory: decoder outputs
-
         RETURNS
         -------
         decoder_input: all zeros frames
@@ -293,11 +292,9 @@ class Decoder(nn.Module):
         PARAMS
         ------
         decoder_inputs: inputs used for teacher-forced training, i.e. mel-specs
-
         RETURNS
         -------
         inputs: processed decoder inputs
-
         """
         # (B, n_mel_channels, T_out) -> (B, T_out, n_mel_channels)
         decoder_inputs = decoder_inputs.transpose(1, 2)
@@ -315,7 +312,6 @@ class Decoder(nn.Module):
         mel_outputs:
         gate_outputs: gate output energies
         alignments:
-
         RETURNS
         -------
         mel_outputs:
@@ -342,7 +338,6 @@ class Decoder(nn.Module):
         PARAMS
         ------
         decoder_input: previous mel output
-
         RETURNS
         -------
         mel_output:
@@ -385,7 +380,6 @@ class Decoder(nn.Module):
         memory: Encoder outputs
         decoder_inputs: Decoder inputs for teacher forcing. i.e. mel-specs
         memory_lengths: Encoder output lengths for attention masking.
-
         RETURNS
         -------
         mel_outputs: mel outputs from the decoder
@@ -420,7 +414,6 @@ class Decoder(nn.Module):
         PARAMS
         ------
         memory: Encoder outputs
-
         RETURNS
         -------
         mel_outputs: mel outputs from the decoder
@@ -454,44 +447,6 @@ class Decoder(nn.Module):
         return mel_outputs, gate_outputs, alignments
 
 
-class GradReverse(torch.autograd.Function):
-    """
-    Extension of grad reverse layer
-    """
-
-    @staticmethod
-    def forward(x):
-        return x.view_as(x)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        grad_output = grad_output.neg()  # constant lambda
-        return grad_output, None
-
-    def grad_reverse(x):
-        return GradReverse.apply(x)
-
-
-class AdversarialBlock(nn.Module):
-
-    def __init__(self, dim_input):
-        super(AdversarialBlock, self).__init__()
-        self.fc1 = nn.Linear(dim_input, 1024)
-        self.bn1 = nn.BatchNorm1d(1024)
-        self.fc2 = nn.Linear(1024, 1024)
-        self.bn2 = nn.BatchNorm1d(1024)
-        self.fc3 = nn.Linear(1024, 2)
-
-    def forward(self, input):
-        input = GradReverse.grad_reverse(input)
-        logits = F.relu(self.bn1(self.fc1(input)))
-        logits = F.dropout(logits)
-        logits = F.relu(self.bn2(self.fc2(logits)))
-        logits = F.dropout(logits)
-        logits = self.fc3(logits)
-
-        return F.log_softmax(logits, 1)
-
 class Tacotron2(nn.Module):
     def __init__(self, hparams):
         super(Tacotron2, self).__init__()
@@ -507,6 +462,7 @@ class Tacotron2(nn.Module):
         self.encoder = Encoder(hparams)
         self.decoder = Decoder(hparams)
         self.postnet = Postnet(hparams)
+        self.GMVAE_ = GMVAE(K, sigma, input_dim, x_dim, w_dim, hidden_dim, hidden_layers, device) # init GMVAE
 
     def parse_batch(self, batch):
         text_padded, input_lengths, mel_padded, gate_padded, \
@@ -539,9 +495,9 @@ class Tacotron2(nn.Module):
         text_lengths, output_lengths = text_lengths.data, output_lengths.data
 
         embedded_inputs = self.embedding(text_inputs).transpose(1, 2)
-
+        style_embedding, _, _ = self.GMVAE_(mels) # add GMVAE style embedding
         encoder_outputs = self.encoder(embedded_inputs, text_lengths)
-        self.encoder_out = encoder_outputs
+        encoder_outputs = torch.cat((encoder_outputs, style_embedding), -1) # concat style embedding to encoder outputs
 
         mel_outputs, gate_outputs, alignments = self.decoder(
             encoder_outputs, mels, memory_lengths=text_lengths)
