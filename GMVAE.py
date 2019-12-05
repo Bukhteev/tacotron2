@@ -82,7 +82,7 @@ class GMVAE(nn.Module):
         return mu + eps*torch.sqrt(var)
     
     def forward(self, y):
-        ean_x, var_x, mean_w, var_w = self.Q_xw(y)
+        mean_x, var_x, mean_w, var_w = self.Q_xw(y)
         w_sample = self.reparameterize(mu = mean_w, var = var_w, dim1 = mean_w.size()[0], dim2 = mean_w.size()[1])
         x_sample = self.reparameterize(mu = mean_x, var = var_x, dim1 = mean_x.size()[0], dim2 = mean_x.size()[1])
         y_recons_mean, y_recons_var = self.Py_x(x_sample)
