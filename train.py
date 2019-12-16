@@ -16,7 +16,6 @@ from loss_function import Tacotron2Loss
 from logger import Tacotron2Logger
 from hparams import create_hparams
 from torch.nn import CrossEntropyLoss as loss_entropy 
-from util_v import vae_weight
 
 
 def reduce_tensor(tensor, n_gpus):
@@ -132,7 +131,7 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
 
         val_loss = 0.0
         for i, batch in enumerate(val_loader):
-            x, y = model.parse_batch(batch)
+            x, y, _ = model.parse_batch(batch)
             y_pred = model(x)
             loss = criterion(y_pred, y)
             if distributed_run:
