@@ -29,10 +29,10 @@ class TextMelLoader(torch.utils.data.Dataset):
 
     def get_mel_text_pair(self, audiopath_and_text):
         # separate filename and text
-        audiopath, text = audiopath_and_text[0], audiopath_and_text[1]
+        audiopath, text, speaker_class = audiopath_and_text[0], audiopath_and_text[1], audiopath_and_text[2]
         text = self.get_text(text)
         mel = self.get_mel(audiopath)
-        return (text, mel)
+        return (text, mel, speaker_class)
 
     def get_mel(self, filename):
         if not self.load_mel_from_disk:
@@ -74,7 +74,7 @@ class TextMelCollate():
         """Collate's training batch from normalized text and mel-spectrogram
         PARAMS
         ------
-        batch: [text_normalized, mel_normalized]
+        batch: [text_normalized, mel_normalized, speaker_id]
         """
         # Right zero-pad all one-hot text sequences to max input length
         input_lengths, ids_sorted_decreasing = torch.sort(
@@ -108,4 +108,4 @@ class TextMelCollate():
             output_lengths[i] = mel.size(1)
 
         return text_padded, input_lengths, mel_padded, gate_padded, \
-            output_lengths
+            output_lengths, batch[2]
