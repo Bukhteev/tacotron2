@@ -24,7 +24,7 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         # Data Parameters             #
         ################################
-        load_mel_from_disk=False,
+        load_mel_from_disk=True,
         training_files='../data/transcript_new.txt',
         validation_files='../data/transcript_val.txt',
         text_cleaners=['transliteration_cleaners'],

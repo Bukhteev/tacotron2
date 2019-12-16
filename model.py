@@ -538,7 +538,7 @@ class Tacotron2(nn.Module):
         self.encoder = Encoder(hparams)
         self.decoder = Decoder(hparams)
         self.postnet = Postnet(hparams)
-        self.gmvae = GMVAE(hprarms.n_mel_channels)
+        self.gmvae = GMVAE(self.n_mel_channels)
         self.classifier = Domain_classifier()
 
     def parse_batch(self, batch):
@@ -577,7 +577,7 @@ class Tacotron2(nn.Module):
 
         encoder_outputs = self.encoder(embedded_inputs, text_lengths)
         print(encoder_outputs.size())
-        class_output = 1 #self.classifier(encoder_outputs)
+        class_output = 1 # self.classifier(encoder_outputs)
         
         encoder_outputs = torch.cat((encoder_outputs, style_embedding), -1) # concat style embedding to encoder outputs
 
