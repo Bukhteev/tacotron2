@@ -73,6 +73,11 @@ def create_hparams(hparams_string=None, verbose=False):
         postnet_embedding_dim=512,
         postnet_kernel_size=5,
         postnet_n_convolutions=5,
+        
+        #GMVAE
+        vae_warming_up=15000,
+	init_vae_weights=0.001,
+	vae_weight_multiler=0.002,
 
         ################################
         # Optimization Hyperparameters #
