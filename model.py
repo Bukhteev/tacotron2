@@ -5,6 +5,7 @@ from torch import nn
 from torch.nn import functional as F
 from layers import ConvNorm, LinearNorm
 from utils import to_gpu, get_mask_from_lengths
+import numpy as np
 
 
 class LocationLayer(nn.Module):
@@ -452,16 +453,17 @@ class GradReverse(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(x):
+    def forward(ctx, x, constant):
+        ctx.constant = constant
         return x.view_as(x)
 
     @staticmethod
     def backward(ctx, grad_output):
-        grad_output = grad_output.neg()  # constant lambda
+        grad_output = grad_output.neg()  * ctx.constant
         return grad_output, None
 
-    def grad_reverse(x):
-        return GradReverse.apply(x)
+    def grad_reverse(x, constant):
+        return GradReverse.apply(x, constant)
 
 class Domain_classifier(nn.Module):
 
@@ -539,7 +541,7 @@ class Tacotron2(nn.Module):
         self.decoder = Decoder(hparams)
         self.postnet = Postnet(hparams)
         self.gmvae = GMVAE(self.n_mel_channels)
-        self.classifier = Domain_classifier()
+        self.classifier = Domain_classifier(214)
 
     def parse_batch(self, batch):
         text_padded, input_lengths, mel_padded, gate_padded, \
@@ -573,13 +575,16 @@ class Tacotron2(nn.Module):
 
         embedded_inputs = self.embedding(text_inputs).transpose(1, 2)
 
-        style_embeddings, log_var, mu = gmvae(mels)
+        style_embeddings, log_var, mu = self.gmvae(mels)
 
         encoder_outputs = self.encoder(embedded_inputs, text_lengths)
-        print(encoder_outputs.size())
-        class_output = 1 # self.classifier(encoder_outputs)
+#         print(encoder_outputs.size())
+        gamma = 10
+        p = 0.5
+        constant = 2. / (1. + np.exp(-gamma * p)) - 1
+        class_output = self.classifier(encoder_outputs, constant)
         
-        encoder_outputs = torch.cat((encoder_outputs, style_embedding), -1) # concat style embedding to encoder outputs
+        encoder_outputs = torch.cat((encoder_outputs, style_embeddings), -1) # concat style embedding to encoder outputs
 
         mel_outputs, gate_outputs, alignments = self.decoder(
             encoder_outputs, mels, memory_lengths=text_lengths)
