@@ -76,8 +76,8 @@ def create_hparams(hparams_string=None, verbose=False):
         
         #GMVAE
         vae_warming_up=15000,
-	init_vae_weights=0.001,
-	vae_weight_multiler=0.002,
+        init_vae_weights=0.001,
+        vae_weight_multiler=0.002,
 
         ################################
         # Optimization Hyperparameters #

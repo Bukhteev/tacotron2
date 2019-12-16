@@ -213,20 +213,13 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
 
             model.zero_grad()
             x, y, y_c = model.parse_batch(batch)
-            y_pred, y_class = model(x)
-            # networ = AdversarialBlock()
-            # adversarial_loss = (model.encoder_out)
-            try:
-                print(model.encoder_out.shape)
-            except:
-                print(model.encoder_out.size)
+            y_pred, y_class, mu, log_var = model(x)
 
             loss = criterion(y_pred, y)
-            loss_1 = loss_entropy(y_class, y_c)
-            mu, log_var = model.mu, model.log_var
+            loss_class = loss_entropy(y_class, y_c)
             ki_loss = -0.5 * torch.sum(1 + log_var - torch.pow(mu, 2) - torch.exp(log_var))
             vae_loss_weight = vae_weight(iteration)
-            loss += loss_1
+            loss += loss_class
             loss += ki_loss * vae_loss_weight
             
             if hparams.distributed_run:

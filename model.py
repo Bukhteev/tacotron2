@@ -5,7 +5,6 @@ from torch import nn
 from torch.nn import functional as F
 from layers import ConvNorm, LinearNorm
 from utils import to_gpu, get_mask_from_lengths
-from GMVAE_ import GMVAE
 
 
 class LocationLayer(nn.Module):
@@ -482,27 +481,47 @@ class Domain_classifier(nn.Module):
         logits = self.fc2(logits)
 
         return logits
-    
 
-# class AdversarialBlock(nn.Module):
+class GMVAE(nn.Module):
+    def __init__(self, n_mel_channels):
+        super(GMVAE, self).__init__()
+        self.encoder = nn.Sequential(nn.Conv1d(n_mel_channels, 512, kernel_size=3), nn.ReLU(),
+                                     nn.Conv1d(512, 512, kernel_size=3), nn.ReLU())
 
-#     def __init__(self, dim_input):
-#         super(AdversarialBlock, self).__init__()
-#         self.fc1 = nn.Linear(dim_input, 1024)
-#         self.bn1 = nn.BatchNorm1d(1024)
-#         self.fc2 = nn.Linear(1024, 1024)
-#         self.bn2 = nn.BatchNorm1d(1024)
-#         self.fc3 = nn.Linear(1024, 2)
+        self.rnn = nn.LSTM(512, hidden_size=256, num_layers=2, bidirectional=True)
+        self.linear_layer1 = nn.Linear(512, 16)
+        self.linear_layer2 = nn.Linear(512, 16)
 
-#     def forward(self, input):
-#         input = GradReverse.grad_reverse(input)
-#         logits = F.relu(self.bn1(self.fc1(input)))
-#         logits = F.dropout(logits)
-#         logits = F.relu(self.bn2(self.fc2(logits)))
-#         logits = F.dropout(logits)
-#         logits = self.fc3(logits)
+    def forward(self, x):
+        x = self.encoder(x)
+        x = x.permute(0, 2, 1)
+        x, _ = self.rnn(x)
+        x = torch.mean(x, 1)
+        mu = self.linear_layer1(x)
+        log_var = self.linear_layer2(x)
+        std = torch.exp(log_var)
+        m = torch.distributions.normal.Normal(mu, std)
 
-#         return F.log_softmax(logits, 1)
+        return m.rsample((mu.size()[0], 16)), log_var, mu
+
+class AdversarialBlock(nn.Module):
+    def __init__(self, dim_input):
+        super(AdversarialBlock, self).__init__()
+        self.fc1 = nn.Linear(dim_input, 1024)
+        self.bn1 = nn.BatchNorm1d(1024)
+        self.fc2 = nn.Linear(1024, 1024)
+        self.bn2 = nn.BatchNorm1d(1024)
+        self.fc3 = nn.Linear(1024, 2)
+
+    def forward(self, input):
+        input = GradReverse.grad_reverse(input)
+        logits = F.relu(self.bn1(self.fc1(input)))
+        logits = F.dropout(logits)
+        logits = F.relu(self.bn2(self.fc2(logits)))
+        logits = F.dropout(logits)
+        logits = self.fc3(logits)
+
+        return F.log_softmax(logits, 1)
 
 class Tacotron2(nn.Module):
     def __init__(self, hparams):
@@ -520,7 +539,7 @@ class Tacotron2(nn.Module):
         self.decoder = Decoder(hparams)
         self.postnet = Postnet(hparams)
         self.gmvae = GMVAE(hprarms.n_mel_channels)
-        self.classifier = Domain_classifier(h)
+        self.classifier = Domain_classifier()
 
     def parse_batch(self, batch):
         text_padded, input_lengths, mel_padded, gate_padded, \
@@ -555,11 +574,10 @@ class Tacotron2(nn.Module):
         embedded_inputs = self.embedding(text_inputs).transpose(1, 2)
 
         style_embeddings, log_var, mu = gmvae(mels)
-        self.mu = mu
-        self.log_var = log_var
 
         encoder_outputs = self.encoder(embedded_inputs, text_lengths)
-        class_output = self.classifier(encoder_outputs)
+        print(encoder_outputs.size())
+        class_output = 1 #self.classifier(encoder_outputs)
         
         encoder_outputs = torch.cat((encoder_outputs, style_embedding), -1) # concat style embedding to encoder outputs
 
@@ -571,7 +589,7 @@ class Tacotron2(nn.Module):
 
         return self.parse_output(
             [mel_outputs, mel_outputs_postnet, gate_outputs, alignments],
-            output_lengths), class_output
+            output_lengths), class_output, mu, log_var
 
     def inference(self, inputs):
         embedded_inputs = self.embedding(inputs).transpose(1, 2)
