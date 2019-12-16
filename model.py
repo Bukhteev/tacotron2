@@ -464,26 +464,45 @@ class GradReverse(torch.autograd.Function):
     def grad_reverse(x):
         return GradReverse.apply(x)
 
-
-class AdversarialBlock(nn.Module):
+class Domain_classifier(nn.Module):
 
     def __init__(self, dim_input):
-        super(AdversarialBlock, self).__init__()
-        self.fc1 = nn.Linear(dim_input, 1024)
-        self.bn1 = nn.BatchNorm1d(1024)
-        self.fc2 = nn.Linear(1024, 1024)
-        self.bn2 = nn.BatchNorm1d(1024)
-        self.fc3 = nn.Linear(1024, 2)
+        super(Domain_classifier, self).__init__()
+        # self.fc1 = nn.Linear(50 * 4 * 4, 100)
+        # self.bn1 = nn.BatchNorm1d(100)
+        # self.fc2 = nn.Linear(100, 2)
+        self.fc1 = nn.Linear(dim_input, 100)
+        self.fc2 = nn.Linear(100, 2)
 
-    def forward(self, input):
-        input = GradReverse.grad_reverse(input)
-        logits = F.relu(self.bn1(self.fc1(input)))
-        logits = F.dropout(logits)
-        logits = F.relu(self.bn2(self.fc2(logits)))
-        logits = F.dropout(logits)
-        logits = self.fc3(logits)
+    def forward(self, input, constant):
+        input = GradReverse.grad_reverse(input, constant)
+        # logits = F.relu(self.bn1(self.fc1(input)))
+        # logits = F.log_softmax(self.fc2(logits), 1)
+        logits = F.relu(self.fc1(input))
+        logits = self.fc2(logits)
 
-        return F.log_softmax(logits, 1)
+        return logits
+    
+
+# class AdversarialBlock(nn.Module):
+
+#     def __init__(self, dim_input):
+#         super(AdversarialBlock, self).__init__()
+#         self.fc1 = nn.Linear(dim_input, 1024)
+#         self.bn1 = nn.BatchNorm1d(1024)
+#         self.fc2 = nn.Linear(1024, 1024)
+#         self.bn2 = nn.BatchNorm1d(1024)
+#         self.fc3 = nn.Linear(1024, 2)
+
+#     def forward(self, input):
+#         input = GradReverse.grad_reverse(input)
+#         logits = F.relu(self.bn1(self.fc1(input)))
+#         logits = F.dropout(logits)
+#         logits = F.relu(self.bn2(self.fc2(logits)))
+#         logits = F.dropout(logits)
+#         logits = self.fc3(logits)
+
+#         return F.log_softmax(logits, 1)
 
 class Tacotron2(nn.Module):
     def __init__(self, hparams):
@@ -501,6 +520,7 @@ class Tacotron2(nn.Module):
         self.decoder = Decoder(hparams)
         self.postnet = Postnet(hparams)
         self.GMVAE_ = GMVAE(hparams('K'), hparams('sigma'), hparams('input_dim'), hparams('x_dim'), hparams('w_dim'), hparams('hidden_dim'), hparams('hidden_layers'), hparams('device')) # init GMVAE
+        self.classifier = Domain_classifier(h)
 
     def parse_batch(self, batch):
         text_padded, input_lengths, mel_padded, gate_padded, \
@@ -537,6 +557,8 @@ class Tacotron2(nn.Module):
         style_embedding, _, _ = self.GMVAE_(mels) # add GMVAE style embedding
 
         encoder_outputs = self.encoder(embedded_inputs, text_lengths)
+        class_output = self.classifier(encoder_outputs)
+        
         self.encoder_out = torch.cat((encoder_outputs, style_embedding), -1) #####
         encoder_outputs = torch.cat((encoder_outputs, style_embedding), -1) # concat style embedding to encoder outputs
 
@@ -548,7 +570,7 @@ class Tacotron2(nn.Module):
 
         return self.parse_output(
             [mel_outputs, mel_outputs_postnet, gate_outputs, alignments],
-            output_lengths)
+            output_lengths), class_output
 
     def inference(self, inputs):
         embedded_inputs = self.embedding(inputs).transpose(1, 2)

@@ -15,6 +15,7 @@ from data_utils import TextMelLoader, TextMelCollate
 from loss_function import Tacotron2Loss
 from logger import Tacotron2Logger
 from hparams import create_hparams
+from torch.nn import CrossEntropyLoss as loss_entropy 
 
 
 def reduce_tensor(tensor, n_gpus):
@@ -211,8 +212,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                 param_group['lr'] = learning_rate
 
             model.zero_grad()
-            x, y = model.parse_batch(batch)
-            y_pred = model(x)
+            x, y, y_c = model.parse_batch(batch)
+            y_pred, y_class = model(x)
             # networ = AdversarialBlock()
             # adversarial_loss = (model.encoder_out)
             try:
@@ -221,6 +222,10 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                 print(model.encoder_out.size)
 
             loss = criterion(y_pred, y)
+            loss_1 = loss_entropy(y_class, y_c)
+            
+            loss += loss_1
+            
             if hparams.distributed_run:
                 reduced_loss = reduce_tensor(loss.data, n_gpus).item()
             else:
