@@ -5,7 +5,7 @@ from torch import nn
 from torch.nn import functional as F
 from layers import ConvNorm, LinearNorm
 from utils import to_gpu, get_mask_from_lengths
-from GMVAE import GMVAE
+from GMVAE_ import GMVAE
 
 
 class LocationLayer(nn.Module):
@@ -519,7 +519,7 @@ class Tacotron2(nn.Module):
         self.encoder = Encoder(hparams)
         self.decoder = Decoder(hparams)
         self.postnet = Postnet(hparams)
-        self.GMVAE_ = GMVAE(hparams('K'), hparams('sigma'), hparams('input_dim'), hparams('x_dim'), hparams('w_dim'), hparams('hidden_dim'), hparams('hidden_layers'), hparams('device')) # init GMVAE
+        self.gmvae = GMVAE(hprarms.n_mel_channels)
         self.classifier = Domain_classifier(h)
 
     def parse_batch(self, batch):
@@ -554,12 +554,13 @@ class Tacotron2(nn.Module):
 
         embedded_inputs = self.embedding(text_inputs).transpose(1, 2)
 
-        style_embedding, _, _ = self.GMVAE_(mels) # add GMVAE style embedding
+        style_embeddings, log_var, mu = gmvae(mels)
+        self.mu = mu
+        self.log_var = log_var
 
         encoder_outputs = self.encoder(embedded_inputs, text_lengths)
         class_output = self.classifier(encoder_outputs)
         
-        self.encoder_out = torch.cat((encoder_outputs, style_embedding), -1) #####
         encoder_outputs = torch.cat((encoder_outputs, style_embedding), -1) # concat style embedding to encoder outputs
 
         mel_outputs, gate_outputs, alignments = self.decoder(
