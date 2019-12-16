@@ -16,6 +16,7 @@ from loss_function import Tacotron2Loss
 from logger import Tacotron2Logger
 from hparams import create_hparams
 from torch.nn import CrossEntropyLoss as loss_entropy 
+from util_v import vae_weight
 
 
 def reduce_tensor(tensor, n_gpus):
@@ -150,7 +151,6 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
 def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
           rank, group_name, hparams):
     """Training and validation logging results to tensorboard and stdout
-
     Params
     ------
     output_directory (string): directory to save checkpoints
@@ -223,8 +223,11 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
 
             loss = criterion(y_pred, y)
             loss_1 = loss_entropy(y_class, y_c)
-            
+            mu, log_var = model.mu, model.log_var
+            ki_loss = -0.5 * torch.sum(1 + log_var - torch.pow(mu, 2) - torch.exp(log_var))
+            vae_loss_weight = vae_weight(iteration)
             loss += loss_1
+            loss += ki_loss * vae_loss_weight
             
             if hparams.distributed_run:
                 reduced_loss = reduce_tensor(loss.data, n_gpus).item()
