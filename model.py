@@ -4,7 +4,7 @@ from torch.autograd import Variable
 from torch import nn
 from torch.nn import functional as F
 from layers import ConvNorm, LinearNorm
-from utils import to_gpu, get_mask_from_lengths
+from utils import to_gpu, get_mask_from_lengths, vae_weight
 import numpy as np
 
 
@@ -206,7 +206,7 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
         self.n_mel_channels = hparams.n_mel_channels
         self.n_frames_per_step = hparams.n_frames_per_step
-        self.encoder_embedding_dim = hparams.encoder_embedding_dim
+        self.encoder_embedding_dim = hparams.encoder_embedding_dim + 16
         self.attention_rnn_dim = hparams.attention_rnn_dim
         self.decoder_rnn_dim = hparams.decoder_rnn_dim
         self.prenet_dim = hparams.prenet_dim
@@ -220,24 +220,24 @@ class Decoder(nn.Module):
             [hparams.prenet_dim, hparams.prenet_dim])
 
         self.attention_rnn = nn.LSTMCell(
-            hparams.prenet_dim + hparams.encoder_embedding_dim,
+            hparams.prenet_dim + self.encoder_embedding_dim,
             hparams.attention_rnn_dim)
 
         self.attention_layer = Attention(
-            hparams.attention_rnn_dim, hparams.encoder_embedding_dim,
+            hparams.attention_rnn_dim, self.encoder_embedding_dim,
             hparams.attention_dim, hparams.attention_location_n_filters,
             hparams.attention_location_kernel_size)
 
         self.decoder_rnn = nn.LSTMCell(
-            hparams.attention_rnn_dim + hparams.encoder_embedding_dim,
+            hparams.attention_rnn_dim + self.encoder_embedding_dim,
             hparams.decoder_rnn_dim, 1)
 
         self.linear_projection = LinearNorm(
-            hparams.decoder_rnn_dim + hparams.encoder_embedding_dim,
+            hparams.decoder_rnn_dim + self.encoder_embedding_dim,
             hparams.n_mel_channels * hparams.n_frames_per_step)
 
         self.gate_layer = LinearNorm(
-            hparams.decoder_rnn_dim + hparams.encoder_embedding_dim, 1,
+            hparams.decoder_rnn_dim + self.encoder_embedding_dim, 1,
             bias=True, w_init_gain='sigmoid')
 
     def get_go_frame(self, memory):
@@ -386,15 +386,13 @@ class Decoder(nn.Module):
         gate_outputs: gate outputs from the decoder
         alignments: sequence of attention weights from the decoder
         """
-
+        
         decoder_input = self.get_go_frame(memory).unsqueeze(0)
         decoder_inputs = self.parse_decoder_inputs(decoder_inputs)
         decoder_inputs = torch.cat((decoder_input, decoder_inputs), dim=0)
         decoder_inputs = self.prenet(decoder_inputs)
-
         self.initialize_decoder_states(
             memory, mask=~get_mask_from_lengths(memory_lengths))
-
         mel_outputs, gate_outputs, alignments = [], [], []
         while len(mel_outputs) < decoder_inputs.size(0) - 1:
             decoder_input = decoder_inputs[len(mel_outputs)]
@@ -403,10 +401,9 @@ class Decoder(nn.Module):
             mel_outputs += [mel_output.squeeze(1)]
             gate_outputs += [gate_output.squeeze()]
             alignments += [attention_weights]
-
         mel_outputs, gate_outputs, alignments = self.parse_decoder_outputs(
             mel_outputs, gate_outputs, alignments)
-
+        
         return mel_outputs, gate_outputs, alignments
 
     def inference(self, memory):
@@ -481,7 +478,7 @@ class Domain_classifier(nn.Module):
         # logits = F.log_softmax(self.fc2(logits), 1)
         logits = F.relu(self.fc1(input))
         logits = self.fc2(logits)
-
+        
         return logits
 
 class GMVAE(nn.Module):
@@ -494,7 +491,7 @@ class GMVAE(nn.Module):
         self.linear_layer1 = nn.Linear(512, 16)
         self.linear_layer2 = nn.Linear(512, 16)
 
-    def forward(self, x):
+    def forward(self, x, size):
         x = self.encoder(x)
         x = x.permute(0, 2, 1)
         x, _ = self.rnn(x)
@@ -503,8 +500,7 @@ class GMVAE(nn.Module):
         log_var = self.linear_layer2(x)
         std = torch.exp(log_var)
         m = torch.distributions.normal.Normal(mu, std)
-
-        return m.rsample((mu.size()[0], 16)), log_var, mu
+        return m.rsample(torch.Size([size])), log_var, mu
 
 class AdversarialBlock(nn.Module):
     def __init__(self, dim_input):
@@ -541,17 +537,17 @@ class Tacotron2(nn.Module):
         self.decoder = Decoder(hparams)
         self.postnet = Postnet(hparams)
         self.gmvae = GMVAE(self.n_mel_channels)
-        self.classifier = Domain_classifier(214)
+        self.classifier = Domain_classifier(512)
 
-    def parse_batch(self, batch):
+    def parse_batch(self, batch, device):
         text_padded, input_lengths, mel_padded, gate_padded, \
             output_lengths, speaker_id = batch
-        text_padded = to_gpu(text_padded).long()
-        input_lengths = to_gpu(input_lengths).long()
+        text_padded = to_gpu(text_padded, device).long()
+        input_lengths = to_gpu(input_lengths, device).long()
         max_len = torch.max(input_lengths.data).item()
-        mel_padded = to_gpu(mel_padded).float()
-        gate_padded = to_gpu(gate_padded).float()
-        output_lengths = to_gpu(output_lengths).long()
+        mel_padded = to_gpu(mel_padded, device).float()
+        gate_padded = to_gpu(gate_padded, device).float()
+        output_lengths = to_gpu(output_lengths, device).long()
 
         return (
             (text_padded, input_lengths, mel_padded, max_len, output_lengths),
@@ -575,8 +571,6 @@ class Tacotron2(nn.Module):
 
         embedded_inputs = self.embedding(text_inputs).transpose(1, 2)
 
-        style_embeddings, log_var, mu = self.gmvae(mels)
-
         encoder_outputs = self.encoder(embedded_inputs, text_lengths)
 #         print(encoder_outputs.size())
         gamma = 10
@@ -584,11 +578,12 @@ class Tacotron2(nn.Module):
         constant = 2. / (1. + np.exp(-gamma * p)) - 1
         class_output = self.classifier(encoder_outputs, constant)
         
+        style_embeddings, log_var, mu = self.gmvae(mels, encoder_outputs.size()[1])
+        style_embeddings = style_embeddings.permute(1, 0, 2)
+        
         encoder_outputs = torch.cat((encoder_outputs, style_embeddings), -1) # concat style embedding to encoder outputs
-
         mel_outputs, gate_outputs, alignments = self.decoder(
             encoder_outputs, mels, memory_lengths=text_lengths)
-
         mel_outputs_postnet = self.postnet(mel_outputs)
         mel_outputs_postnet = mel_outputs + mel_outputs_postnet
 

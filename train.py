@@ -13,9 +13,10 @@ from torch.utils.data import DataLoader
 from model import Tacotron2
 from data_utils import TextMelLoader, TextMelCollate
 from loss_function import Tacotron2Loss
-from logger import Tacotron2Logger
+# from logger import Tacotron2Logger
 from hparams import create_hparams
 from torch.nn import CrossEntropyLoss as loss_entropy 
+from utils import vae_weight
 
 
 def reduce_tensor(tensor, n_gpus):
@@ -65,14 +66,14 @@ def prepare_directories_and_logger(output_directory, log_directory, rank):
         if not os.path.isdir(output_directory):
             os.makedirs(output_directory)
             os.chmod(output_directory, 0o775)
-        logger = Tacotron2Logger(os.path.join(output_directory, log_directory))
+        logger = None #Tacotron2Logger(os.path.join(output_directory, log_directory))
     else:
         logger = None
     return logger
 
 
-def load_model(hparams):
-    model = Tacotron2(hparams).cuda()
+def load_model(hparams, device):
+    model = Tacotron2(hparams).to(device)
     if hparams.fp16_run:
         model.decoder.attention_layer.score_mask_value = finfo('float16').min
 
@@ -88,7 +89,7 @@ def warm_start_model(checkpoint_path, model, ignore_layers):
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
     model_dict = checkpoint_dict['state_dict']
     if len(ignore_layers) > 0:
-        model_dict = {k: v for k, v in model_dict.items()
+        model_dict = {k[7:]: v for k, v in model_dict.items()
                       if k not in ignore_layers}
         dummy_dict = model.state_dict()
         dummy_dict.update(model_dict)
@@ -120,7 +121,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, filepath):
 
 
 def validate(model, criterion, valset, iteration, batch_size, n_gpus,
-             collate_fn, logger, distributed_run, rank):
+             collate_fn, logger, distributed_run, rank, device):
     """Handles all the validation scoring and printing"""
     model.eval()
     with torch.no_grad():
@@ -131,8 +132,8 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
 
         val_loss = 0.0
         for i, batch in enumerate(val_loader):
-            x, y, _ = model.parse_batch(batch)
-            y_pred = model(x)
+            x, y, _ = model.parse_batch(batch, device)
+            y_pred, _, _, _ = model(x)
             loss = criterion(y_pred, y)
             if distributed_run:
                 reduced_val_loss = reduce_tensor(loss.data, n_gpus).item()
@@ -144,7 +145,7 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
     model.train()
     if rank == 0:
         print("Validation loss {}: {:9f}  ".format(iteration, reduced_val_loss))
-        logger.log_validation(val_loss, model, y, y_pred, iteration)
+#         logger.log_validation(val_loss, model, y, y_pred, iteration)
 
 
 def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
@@ -164,8 +165,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
 
     torch.manual_seed(hparams.seed)
     torch.cuda.manual_seed(hparams.seed)
-
-    model = load_model(hparams)
+    device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+    model = load_model(hparams, device)
     learning_rate = hparams.learning_rate
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate,
                                  weight_decay=hparams.weight_decay)
@@ -180,8 +181,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
 
     criterion = Tacotron2Loss()
 
-    logger = prepare_directories_and_logger(
-        output_directory, log_directory, rank)
+#     logger = prepare_directories_and_logger(
+#         output_directory, log_directory, rank)
 
     train_loader, valset, collate_fn = prepare_dataloaders(hparams)
 
@@ -211,14 +212,16 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                 param_group['lr'] = learning_rate
 
             model.zero_grad()
-            x, y, y_c = model.parse_batch(batch)
+            x, y, y_c = model.parse_batch(batch, device)
             y_pred, y_class, mu, log_var = model(x)
-
+            
+            _, y_class = torch.max(torch.mean(y_class, dim=2), dim = 1)
+            loss_class = loss_entropy(y_class, y_c) 
+            
             loss = criterion(y_pred, y)
-            loss_class = loss_entropy(y_class, y_c)
-            ki_loss = -0.5 * torch.sum(1 + log_var - torch.pow(mu, 2) - torch.exp(log_var))
-            vae_loss_weight = vae_weight(iteration)
-            loss += loss_class
+            ki_loss = -0.5 * torch.sum(1 + log_var - torch.pow(mu, 2) - torch.exp(log_var)).to(device)
+            vae_loss_weight = vae_weight(iteration, hparams).to(device)
+#             loss += loss_class
             loss += ki_loss * vae_loss_weight
             
             if hparams.distributed_run:
@@ -245,13 +248,13 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                 duration = time.perf_counter() - start
                 print("Train loss {} {:.6f} Grad Norm {:.6f} {:.2f}s/it".format(
                     iteration, reduced_loss, grad_norm, duration))
-                logger.log_training(
-                    reduced_loss, grad_norm, learning_rate, duration, iteration)
+#                 logger.log_training(
+#                     reduced_loss, grad_norm, learning_rate, duration, iteration)
 
             if not is_overflow and (iteration % hparams.iters_per_checkpoint == 0):
                 validate(model, criterion, valset, iteration,
-                         hparams.batch_size, n_gpus, collate_fn, logger,
-                         hparams.distributed_run, rank)
+                         hparams.batch_size, n_gpus, collate_fn, None,
+                         hparams.distributed_run, rank, device)
                 if rank == 0:
                     checkpoint_path = os.path.join(
                         output_directory, "checkpoint_{}".format(iteration))
